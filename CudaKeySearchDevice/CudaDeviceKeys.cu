@@ -95,6 +95,11 @@ cudaError_t CudaDeviceKeys::allocateChainBuf(unsigned int count)
 
 cudaError_t CudaDeviceKeys::initializeBasePoints()
 {
+    // 检查是否已经初始化
+    if(_devBasePointX != NULL || _devBasePointY != NULL) {
+        return cudaErrorAlreadyMapped;
+    }
+    
 	// generate a table of points G, 2G, 4G, 8G...(2^255)G
 	std::vector<secp256k1::ecpoint> table;
 
@@ -112,12 +117,16 @@ cudaError_t CudaDeviceKeys::initializeBasePoints()
 
 	cudaError_t err = cudaMalloc(&_devBasePointX, sizeof(unsigned int) * count * 8);
 
-	if(err) {
+	if(err != cudaSuccess) {
+        _devBasePointX = NULL;
 		return err;
 	}
 
 	err = cudaMalloc(&_devBasePointY, sizeof(unsigned int) * count * 8);
-	if(err) {
+	if(err != cudaSuccess) {
+        cudaFree(_devBasePointX);
+        _devBasePointX = NULL;
+        _devBasePointY = NULL;
 		return err;
 	}
 
@@ -140,7 +149,11 @@ cudaError_t CudaDeviceKeys::initializeBasePoints()
 
 	delete[] tmpX;
 
-	if(err) {
+	if(err != cudaSuccess) {
+        cudaFree(_devBasePointX);
+        cudaFree(_devBasePointY);
+        _devBasePointX = NULL;
+        _devBasePointY = NULL;
 		delete[] tmpY;
 		return err;
 	}
@@ -148,8 +161,16 @@ cudaError_t CudaDeviceKeys::initializeBasePoints()
 	err = cudaMemcpy(_devBasePointY, tmpY, count * 8 * sizeof(unsigned int), cudaMemcpyHostToDevice);
 
 	delete[] tmpY;
+    
+    if(err != cudaSuccess) {
+        cudaFree(_devBasePointX);
+        cudaFree(_devBasePointY);
+        _devBasePointX = NULL;
+        _devBasePointY = NULL;
+        return err;
+    }
 
-	return err;
+	return cudaSuccess;
 }
 
 cudaError_t CudaDeviceKeys::initializePublicKeys(size_t count)
@@ -191,66 +212,86 @@ cudaError_t CudaDeviceKeys::initializePublicKeys(size_t count)
 
 cudaError_t CudaDeviceKeys::init(int blocks, int threads, int pointsPerThread, const std::vector<secp256k1::uint256> &privateKeys)
 {
-	_blocks = blocks;
-	_threads = threads;
-	_pointsPerThread = pointsPerThread;
+    // 检查输入参数
+    if(blocks <= 0 || threads <= 0 || pointsPerThread <= 0) {
+        return cudaErrorInvalidValue;
+    }
+    
+    if(privateKeys.size() == 0) {
+        return cudaErrorInvalidValue;
+    }
+    
+    _blocks = blocks;
+    _threads = threads;
+    _pointsPerThread = pointsPerThread;
 
-	size_t count = privateKeys.size();
+    size_t count = privateKeys.size();
 
-	// Allocate space for public keys on device
-	cudaError_t err = initializePublicKeys(count);
+    // Allocate space for public keys on device
+    cudaError_t err = initializePublicKeys(count);
+    if(err != cudaSuccess) {
+        return err;
+    }
 
-	if(err) {
-		return err;
-	}
+    err = initializeBasePoints();
+    if(err != cudaSuccess) {
+        return err;
+    }
 
-	err = initializeBasePoints();
-	if(err) {
-		return err;
-	}
+    // Allocate private keys on device
+    err = cudaMalloc(&_devPrivate, sizeof(unsigned int) * count * 8);
+    if(err != cudaSuccess) {
+        return err;
+    }
 
-	// Allocate private keys on device
-	err = cudaMalloc(&_devPrivate, sizeof(unsigned int) * count * 8);
-	if(err) {
-		return err;
-	}
+    // Clear private keys
+    err = cudaMemset(_devPrivate, 0, sizeof(unsigned int) * count * 8);
+    if(err != cudaSuccess) {
+        cudaFree(_devPrivate);
+        _devPrivate = NULL;
+        return err;
+    }
 
+    err = allocateChainBuf(_threads * _blocks * _pointsPerThread);
+    if(err != cudaSuccess) {
+        cudaFree(_devPrivate);
+        _devPrivate = NULL;
+        return err;
+    }
 
-	// Clear private keys
-	err = cudaMemset(_devPrivate, 0, sizeof(unsigned int) * count * 8);
-	if(err) {
-		return err;
-	}
+    // Copy private keys to system memory buffer
+    unsigned int *tmp = NULL;
+    try {
+        tmp = new unsigned int[count * 8];
+    } catch(std::bad_alloc&) {
+        cudaFree(_devPrivate);
+        _devPrivate = NULL;
+        return cudaErrorMemoryAllocation;
+    }
 
-	err = allocateChainBuf(_threads * _blocks * _pointsPerThread);
-	if(err) {
-		return err;
-	}
+    for(int block = 0; block < _blocks; block++) {
+        for(int thread = 0; thread < _threads; thread++) {
+            for(int idx = 0; idx < _pointsPerThread; idx++) {
 
-	// Copy private keys to system memory buffer
-	unsigned int *tmp = new unsigned int[count * 8];
+                int index = getIndex(block, thread, idx);
 
-	for(int block = 0; block < _blocks; block++) {
-		for(int thread = 0; thread < _threads; thread++) {
-			for(int idx = 0; idx < _pointsPerThread; idx++) {
+                splatBigInt(tmp, block, thread, idx, privateKeys[index]);
+            }
+        }
+    }
 
-				int index = getIndex(block, thread, idx);
+    // Copy private keys to device memory
+    err = cudaMemcpy(_devPrivate, tmp, count * sizeof(unsigned int) * 8, cudaMemcpyHostToDevice);
+    
+    delete[] tmp;
+    
+    if(err != cudaSuccess) {
+        cudaFree(_devPrivate);
+        _devPrivate = NULL;
+        return err;
+    }
 
-				splatBigInt(tmp, block, thread, idx, privateKeys[index]);
-			}
-		}
-	}
-
-	// Copy private keys to device memory
-	err = cudaMemcpy(_devPrivate, tmp, count * sizeof(unsigned int) * 8, cudaMemcpyHostToDevice);
-
-	delete[] tmp;
-
-	if(err) {
-		return err;
-	}
-
-	return cudaSuccess;
+    return cudaSuccess;
 }
 
 void CudaDeviceKeys::clearPublicKeys()
@@ -266,12 +307,12 @@ void CudaDeviceKeys::clearPrivateKeys()
 {
 	cudaFree(_devBasePointX);
 	cudaFree(_devBasePointY);
-	cudaFree(_devPrivate);
 	cudaFree(_devChain);
 
 	_devChain = NULL;
 	_devBasePointX = NULL;
 	_devBasePointY = NULL;
+	// 注意：不释放_devPrivate，因为它可能由外部管理
 	_devPrivate = NULL;
 }
 
@@ -394,4 +435,34 @@ bool CudaDeviceKeys::selfTest(const std::vector<secp256k1::uint256> &privateKeys
 	}
 
 	return true;
+}
+
+// 直接使用设备内存中的私钥初始化
+cudaError_t CudaDeviceKeys::initWithDeviceKeys(int blocks, int threads, int pointsPerThread, unsigned int *devPrivateKeys, unsigned int numKeys)
+{
+	_blocks = blocks;
+	_threads = threads;
+	_pointsPerThread = pointsPerThread;
+
+	// Allocate space for public keys on device
+	cudaError_t err = initializePublicKeys(numKeys);
+
+	if(err) {
+		return err;
+	}
+
+	err = initializeBasePoints();
+	if(err) {
+		return err;
+	}
+
+	// 直接使用设备内存中的私钥，不需要分配新的内存
+	_devPrivate = devPrivateKeys;
+
+	err = allocateChainBuf(_threads * _blocks * _pointsPerThread);
+	if(err) {
+		return err;
+	}
+
+	return cudaSuccess;
 }

@@ -21,13 +21,16 @@ private:
 
 	uint64_t _statusInterval;
 
-    secp256k1::uint256 _stride = 1;
 	uint64_t _iterCount;
 	uint64_t _total;
 	uint64_t _totalTime;
 
-    secp256k1::uint256 _startKey;
-    secp256k1::uint256 _endKey;
+	// For half-hour statistics
+	uint64_t _prevHalfHourTotal;
+    bool _randomMode;
+    bool _randomRangeMode;
+    secp256k1::uint256 _randomRangeStart;
+    secp256k1::uint256 _randomRangeEnd;
 
 	// Each index of each thread gets a flag to indicate if it found a valid hash
 	bool _running;
@@ -42,10 +45,13 @@ private:
 	void removeTargetFromList(const unsigned int value[5]);
 	bool isTargetInList(const unsigned int value[5]);
 	void setTargetsOnDevice();
+	void outputExampleKeyAndAddress();
+	void logMatchedKey(const KeySearchResult &result);
+	void logHalfHourStats();
 
 public:
 
-    KeyFinder(const secp256k1::uint256 &startKey, const secp256k1::uint256 &endKey, int compression, KeySearchDevice* device, const secp256k1::uint256 &stride);
+    KeyFinder(int compression, KeySearchDevice* device, bool randomMode = true, bool randomRangeMode = false, const secp256k1::uint256 &randomRangeStart = 0, const secp256k1::uint256 &randomRangeEnd = 0);
 
 	~KeyFinder();
 

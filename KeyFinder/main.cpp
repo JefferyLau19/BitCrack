@@ -16,52 +16,50 @@
 #include "CudaKeySearchDevice.h"
 #endif
 
-#ifdef BUILD_OPENCL
-#include "CLKeySearchDevice.h"
-#endif
+struct RunConfig {
+    uint64_t statusInterval;
+    uint64_t checkpointInterval;
 
-typedef struct {
-    // startKey is the first key. We store it so that if the --continue
-    // option is used, the correct progress is displayed. startKey and
-    // nextKey are only equal at the very beginning. nextKey gets saved
-    // in the checkpoint file.
-    secp256k1::uint256 startKey = 1;
-    secp256k1::uint256 nextKey = 1;
-
-    // The last key to be checked
-    secp256k1::uint256 endKey = secp256k1::N - 1;
-
-    uint64_t statusInterval = 1800;
-    uint64_t checkpointInterval = 60000;
-
-    unsigned int threads = 0;
-    unsigned int blocks = 0;
-    unsigned int pointsPerThread = 0;
+    unsigned int threads;
+    unsigned int blocks;
+    unsigned int pointsPerThread;
     
-    int compression = PointCompressionType::COMPRESSED;
+    int compression;
  
     std::vector<std::string> targets;
 
-    std::string targetsFile = "";
+    std::string targetsFile;
 
-    std::string checkpointFile = "";
+    std::string checkpointFile;
 
-    int device = 0;
+    int device;
 
-    std::string resultsFile = "";
+    std::string resultsFile;
+    std::string logFile;
 
-    uint64_t totalkeys = 0;
-    unsigned int elapsed = 0;
-    secp256k1::uint256 stride = 1;
+    uint64_t totalkeys;
+    unsigned int elapsed;
 
-    bool follow = false;
-}RunConfig;
+    bool follow;
+    bool randomMode;
+    bool randomRangeMode;
+    secp256k1::uint256 randomRangeStart;
+    secp256k1::uint256 randomRangeEnd;
+
+    RunConfig() : statusInterval(1800), checkpointInterval(60000),
+                  threads(0), blocks(0), pointsPerThread(0),
+                  compression(PointCompressionType::BOTH),
+                  targetsFile(""), checkpointFile(""), device(0),
+                  resultsFile(""), logFile(""), totalkeys(0), elapsed(0),
+                  follow(false), randomMode(true), randomRangeMode(false),
+                  randomRangeStart(0), randomRangeEnd(0) {}
+};
 
 static RunConfig _config;
 
 std::vector<DeviceManager::DeviceInfo> _devices;
 
-void writeCheckpoint(secp256k1::uint256 nextKey);
+void writeCheckpoint();
 
 static uint64_t _lastUpdate = 0;
 static uint64_t _runningTime = 0;
@@ -72,25 +70,34 @@ static uint64_t _startTime = 0;
 */
 void resultCallback(KeySearchResult info)
 {
+	// Generate both compressed and uncompressed addresses for the found key
+	std::string uncompressedAddress = Address::fromPublicKey(info.publicKey, false);
+	std::string compressedAddress = Address::fromPublicKey(info.publicKey, true);
+	
 	if(_config.resultsFile.length() != 0) {
 		Logger::log(LogLevel::Info, "Found key for address '" + info.address + "'. Written to '" + _config.resultsFile + "'");
 
-		std::string s = info.address + " " + info.privateKey.toString(16) + " " + info.publicKey.toString(info.compressed);
+		// Save both address formats to results file
+		std::string s = info.privateKey.toString(16) + " " + uncompressedAddress + " " + compressedAddress;
 		util::appendToFile(_config.resultsFile, s);
 
 		return;
 	}
 
-	std::string logStr = "Address:     " + info.address + "\n";
-	logStr += "Private key: " + info.privateKey.toString(16) + "\n";
-	logStr += "Compressed:  ";
-
+	std::string logStr = "=== KEY FOUND ===\n";
+	logStr += "Matched Address: ";
+	logStr += info.address;
+	logStr += "\n";
+	logStr += "Format: ";
 	if(info.compressed) {
-		logStr += "yes\n";
+		logStr += "Compressed";
 	} else {
-		logStr += "no\n";
+		logStr += "Uncompressed";
 	}
-
+	logStr += "\n";
+	logStr += "Private key: " + info.privateKey.toString(16) + "\n";
+	logStr += "Uncompressed Address: " + uncompressedAddress + "\n";
+	logStr += "Compressed Address: " + compressedAddress + "\n";
 	logStr += "Public key:  \n";
 
 	if(info.compressed) {
@@ -99,6 +106,7 @@ void resultCallback(KeySearchResult info)
 		logStr += info.publicKey.x.toString(16) + "\n";
 		logStr += info.publicKey.y.toString(16) + "\n";
 	}
+	logStr += "================\n";
 
 	Logger::log(LogLevel::Info, logStr);
 }
@@ -145,7 +153,7 @@ void statusCallback(KeySearchStatus info)
         uint64_t t = util::getSystemTime();
         if(t - _lastUpdate >= _config.checkpointInterval) {
             Logger::log(LogLevel::Info, "Checkpoint");
-            writeCheckpoint(info.nextKey);
+            writeCheckpoint();
             _lastUpdate = t;
         }
     }
@@ -196,25 +204,19 @@ void usage()
     printf("-c, --compressed        Use compressed points\n");
     printf("-u, --uncompressed      Use Uncompressed points\n");
     printf("--compression  MODE     Specify compression where MODE is\n");
-    printf("                          COMPRESSED or UNCOMPRESSED or BOTH\n");
+    printf("                          COMPRESSED or UNCOMPRESSED or BOTH (default)\n");
     printf("-d, --device ID         Use device ID\n");
     printf("-b, --blocks N          N blocks\n");
     printf("-t, --threads N         N threads per block\n");
     printf("-p, --points N          N points per thread\n");
     printf("-i, --in FILE           Read addresses from FILE, one per line\n");
     printf("-o, --out FILE          Write keys to FILE\n");
+    printf("    --log FILE          Write log output to FILE\n");
     printf("-f, --follow            Follow text output\n");
     printf("--list-devices          List available devices\n");
-    printf("--keyspace KEYSPACE     Specify the keyspace:\n");
-    printf("                          START:END\n");
-    printf("                          START:+COUNT\n");
-    printf("                          START\n");
-    printf("                          :END\n"); 
-    printf("                          :+COUNT\n");
-    printf("                        Where START, END, COUNT are in hex format\n");
-    printf("--stride N              Increment by N keys at a time\n");
-    printf("--share M/N             Divide the keyspace into N equal shares, process the Mth share\n");
-    printf("--continue FILE         Save/load progress from FILE\n");
+    // --stride parameter removed as it's only used in sequential mode
+
+    printf("--random_user           Use random private key generation mode (default)\n");
 }
 
 
@@ -242,12 +244,6 @@ static KeySearchDevice *getDeviceContext(DeviceManager::DeviceInfo &device, int 
 #ifdef BUILD_CUDA
     if(device.type == DeviceManager::DeviceType::CUDA) {
         return new CudaKeySearchDevice((int)device.physicalId, threads, pointsPerThread, blocks);
-    }
-#endif
-
-#ifdef BUILD_OPENCL
-    if(device.type == DeviceManager::DeviceType::OpenCL) {
-        return new CLKeySearchDevice(device.physicalId, threads, pointsPerThread, blocks);
     }
 #endif
 
@@ -307,20 +303,18 @@ static std::string getCompressionString(int mode)
     throw std::string("Invalid compression setting '" + util::format(mode) + "'");
 }
 
-void writeCheckpoint(secp256k1::uint256 nextKey)
+void writeCheckpoint()
 {
     std::ofstream tmp(_config.checkpointFile, std::ios::out);
 
-    tmp << "start=" << _config.startKey.toString() << std::endl;
-    tmp << "next=" << nextKey.toString() << std::endl;
-    tmp << "end=" << _config.endKey.toString() << std::endl;
-    tmp << "blocks=" << _config.blocks << std::endl;
-    tmp << "threads=" << _config.threads << std::endl;
-    tmp << "points=" << _config.pointsPerThread << std::endl;
-    tmp << "compression=" << getCompressionString(_config.compression) << std::endl;
-    tmp << "device=" << _config.device << std::endl;
-    tmp << "elapsed=" << (_config.elapsed + util::getSystemTime() - _startTime) << std::endl;
-    tmp << "stride=" << _config.stride.toString();
+    if(!tmp.is_open()) {
+        Logger::log(LogLevel::Error, "Unable to open checkpoint file for writing: " + _config.checkpointFile);
+        return;
+    }
+
+    // In random mode, we don't need to store key range information
+    tmp << "mode=random" << std::endl;
+
     tmp.close();
 }
 
@@ -340,10 +334,7 @@ void readCheckpointFile()
 
     std::map<std::string, ConfigFileEntry> entries = reader.read();
 
-    _config.startKey = secp256k1::uint256(entries["start"].value);
-    _config.nextKey = secp256k1::uint256(entries["next"].value);
-    _config.endKey = secp256k1::uint256(entries["end"].value);
-
+    // In random mode, we only need to load the basic configuration
     if(_config.threads == 0 && entries.find("threads") != entries.end()) {
         _config.threads = util::parseUInt32(entries["threads"].value);
     }
@@ -359,11 +350,9 @@ void readCheckpointFile()
     if(entries.find("elapsed") != entries.end()) {
         _config.elapsed = util::parseUInt32(entries["elapsed"].value);
     }
-    if(entries.find("stride") != entries.end()) {
-        _config.stride = util::parseUInt64(entries["stride"].value);
-    }
-
-    _config.totalkeys = (_config.nextKey - _config.startKey).toUint64();
+    
+    // In random mode, totalkeys is calculated differently
+    _config.totalkeys = 0;
 }
 
 int run()
@@ -374,9 +363,7 @@ int run()
     }
 
     Logger::log(LogLevel::Info, "Compression: " + getCompressionString(_config.compression));
-    Logger::log(LogLevel::Info, "Starting at: " + _config.nextKey.toString());
-    Logger::log(LogLevel::Info, "Ending at:   " + _config.endKey.toString());
-    Logger::log(LogLevel::Info, "Counting by: " + _config.stride.toString());
+    Logger::log(LogLevel::Info, "Running in random mode");
 
     try {
 
@@ -401,22 +388,28 @@ int run()
         // Get device context
         KeySearchDevice *d = getDeviceContext(_devices[_config.device], _config.blocks, _config.threads, _config.pointsPerThread);
 
-        KeyFinder f(_config.nextKey, _config.endKey, _config.compression, d, _config.stride);
-
-        f.setResultCallback(resultCallback);
-        f.setStatusInterval(_config.statusInterval);
-        f.setStatusCallback(statusCallback);
-
-        f.init();
-
-        if(!_config.targetsFile.empty()) {
-            f.setTargets(_config.targetsFile);
+        KeyFinder *f;
+        if (_config.randomRangeMode) {
+            f = new KeyFinder(_config.compression, d, _config.randomMode, _config.randomRangeMode, _config.randomRangeStart, _config.randomRangeEnd);
         } else {
-            f.setTargets(_config.targets);
+            f = new KeyFinder(_config.compression, d, _config.randomMode);
         }
 
-        f.run();
+        f->setResultCallback(resultCallback);
+        f->setStatusInterval(_config.statusInterval);
+        f->setStatusCallback(statusCallback);
 
+        f->init();
+
+        if(!_config.targetsFile.empty()) {
+            f->setTargets(_config.targetsFile);
+        } else {
+            f->setTargets(_config.targets);
+        }
+
+        f->run();
+
+        delete f;
         delete d;
     } catch(KeySearchException ex) {
         Logger::log(LogLevel::Info, "Error: " + ex.msg);
@@ -511,12 +504,15 @@ int main(int argc, char **argv)
     parser.add("", "--compression", true);
 	parser.add("-i", "--in", true);
 	parser.add("-o", "--out", true);
+    parser.add("", "--log", true);
     parser.add("-f", "--follow", false);
     parser.add("", "--list-devices", false);
     parser.add("", "--keyspace", true);
     parser.add("", "--continue", true);
     parser.add("", "--share", true);
-    parser.add("", "--stride", true);
+    // --stride parameter removed as it's only used in sequential mode
+    parser.add("", "--random_user", false);
+    parser.add("", "--random_range", true);
 
     try {
         parser.parse(argc, argv);
@@ -553,55 +549,56 @@ int main(int argc, char **argv)
 				_config.targetsFile = optArg.arg;
 			} else if(optArg.equals("-o", "--out")) {
 				_config.resultsFile = optArg.arg;
+			} else if(optArg.equals("", "--log")) {
+				_config.logFile = optArg.arg;
             } else if(optArg.equals("", "--list-devices")) {
                 listDevices = true;
             } else if(optArg.equals("", "--continue")) {
-                _config.checkpointFile = optArg.arg;
+                // Continue option is not compatible with random mode
+                Logger::log(LogLevel::Warning, "--continue option is ignored in random mode");
             } else if(optArg.equals("", "--keyspace")) {
-                secp256k1::uint256 start;
-                secp256k1::uint256 end;
-
-                parseKeyspace(optArg.arg, start, end);
-
-                if(start.cmp(secp256k1::N) > 0) {
-                    throw std::string("argument is out of range");
-                }
-                if(start.isZero()) {
-                    throw std::string("argument is out of range");
-                }
-
-                if(end.cmp(secp256k1::N) > 0) {
-                    throw std::string("argument is out of range");
-                }
-
-                if(start.cmp(end) > 0) {
-                    throw std::string("Invalid argument");
-                }
-
-                _config.startKey = start;
-                _config.nextKey = start;
-                _config.endKey = end;
+                // Keyspace option is not compatible with random mode
+                Logger::log(LogLevel::Warning, "--keyspace option is ignored in random mode");
             } else if(optArg.equals("", "--share")) {
-                if(!parseShare(optArg.arg, shareIdx, numShares)) {
-                    throw std::string("Invalid argument");
-                }
-                optShares = true;
-            } else if(optArg.equals("", "--stride")) {
-                try {
-                    _config.stride = secp256k1::uint256(optArg.arg);
-                } catch(...) {
-                    throw std::string("invalid argument: : expected hex string");
-                }
-
-                if(_config.stride.cmp(secp256k1::N) >= 0) {
-                    throw std::string("argument is out of range");
-                }
-
-                if(_config.stride.cmp(0) == 0) {
-                    throw std::string("argument is out of range");
-                }
+                // Share option is not compatible with random mode
+                Logger::log(LogLevel::Warning, "--share option is ignored in random mode");
+            // --stride parameter removed as it's only used in sequential mode
             } else if(optArg.equals("-f", "--follow")) {
                 _config.follow = true;
+            } else if(optArg.equals("", "--random_user")) {
+                // Random mode is enabled by default, but this option allows explicit specification
+                _config.randomMode = true;
+                Logger::log(LogLevel::Info, "Random mode explicitly enabled");
+            } else if(optArg.equals("", "--random_range")) {
+                // Parse the range in the format "start:end"
+                size_t pos = optArg.arg.find(':');
+                if(pos == std::string::npos) {
+                    throw std::string("Invalid range format. Use start:end");
+                }
+                
+                std::string startStr = optArg.arg.substr(0, pos);
+                std::string endStr = optArg.arg.substr(pos + 1);
+                
+                // Convert to uint256
+                secp256k1::uint256 startRange(startStr);
+                secp256k1::uint256 endRange(endStr);
+                
+                // Validate range
+                if(startRange.cmp(endRange) >= 0) {
+                    throw std::string("Invalid range: start must be less than end");
+                }
+                
+                if(startRange.cmp(secp256k1::N) >= 0 || endRange.cmp(secp256k1::N) >= 0) {
+                    throw std::string("Range values out of curve order");
+                }
+                
+                // Set the range in config
+                _config.randomMode = true;  // Enable random mode
+                _config.randomRangeMode = true;
+                _config.randomRangeStart = startRange;
+                _config.randomRangeEnd = endRange;
+                
+                // Random range mode doesn't need startKey, nextKey, and endKey
             }
 
 		} catch(std::string err) {
@@ -642,26 +639,7 @@ int main(int argc, char **argv)
 		}
 	}
     
-    // Calculate where to start and end in the keyspace when the --share option is used
-    if(optShares) {
-        Logger::log(LogLevel::Info, "Share " + util::format(shareIdx) + " of " + util::format(numShares));
-        secp256k1::uint256 numKeys = _config.endKey - _config.nextKey + 1;
-
-        secp256k1::uint256 diff = numKeys.mod(numShares);
-        numKeys = numKeys - diff;
-
-        secp256k1::uint256 shareSize = numKeys.div(numShares);
-
-        secp256k1::uint256 startPos = _config.nextKey + (shareSize * (shareIdx - 1));
-
-        if(shareIdx < numShares) {
-            secp256k1::uint256 endPos = _config.nextKey + (shareSize * (shareIdx)) - 1;
-            _config.endKey = endPos;
-        }
-
-        _config.nextKey = startPos;
-        _config.startKey = startPos;
-    }
+    // Share option is not compatible with random mode
 
 	// Check option for compressed, uncompressed, or both
 	if(optCompressed && optUncompressed) {
@@ -672,8 +650,12 @@ int main(int argc, char **argv)
 		_config.compression = PointCompressionType::UNCOMPRESSED;
 	}
 
-    if(_config.checkpointFile.length() > 0) {
-        readCheckpointFile();
+    // Checkpoint option is not compatible with random mode
+    
+    // Set log file if specified
+    if(_config.logFile.length() > 0) {
+        Logger::setLogFile(_config.logFile);
+        Logger::log(LogLevel::Info, "Log file set to: " + _config.logFile);
     }
 
     return run();

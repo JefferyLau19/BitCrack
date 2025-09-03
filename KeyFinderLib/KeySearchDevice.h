@@ -3,7 +3,7 @@
 
 #include <vector>
 #include <set>
-#include "secp256k1.h"
+#include "../secp256k1lib/secp256k1.h"
 #include "KeySearchTypes.h"
 
 
@@ -39,7 +39,7 @@ class KeySearchDevice {
 public:
 
     // Initialize the device
-    virtual void init(const secp256k1::uint256 &start, int compression, const secp256k1::uint256 &stride) = 0;
+    virtual void init(int compression) = 0;
 
     // Perform one iteration
     virtual void doStep() = 0;
@@ -60,6 +60,18 @@ public:
     virtual void getMemoryInfo(uint64_t &freeMem, uint64_t &totalMem) = 0;
 
     virtual secp256k1::uint256 getNextKey() = 0;
+
+    // Set random mode
+    virtual void setRandomMode(bool randomMode) = 0;
+    
+    // Set random range for random range mode
+    virtual void setRandomRange(const secp256k1::uint256 &start, const secp256k1::uint256 &end) = 0;
+    
+    // Check if device supports random generation
+    virtual bool supportsRandomGeneration() = 0;
+    
+    // Generate a random number
+    virtual secp256k1::uint256 generateRandomNumber(const secp256k1::uint256 &maxValue) = 0;
 };
 
 #endif

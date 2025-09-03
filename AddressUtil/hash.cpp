@@ -13,7 +13,7 @@ bool Address::verifyAddress(std::string address)
 {
 	// Check length
 	if(address.length() > 34) {
-		false;
+		return false;
 	}
 
 	// Check encoding
@@ -61,7 +61,7 @@ std::string Address::fromPublicKey(const secp256k1::ecpoint &p, bool compressed)
 
 	secp256k1::uint256 addressBigInt(addressWords, secp256k1::uint256::BigEndian);
 
-	return "1" + Base58::toBase58(addressBigInt);
+	return Base58::toBase58(addressBigInt);
 }
 
 void Hash::hashPublicKey(const secp256k1::ecpoint &p, unsigned int *digest)

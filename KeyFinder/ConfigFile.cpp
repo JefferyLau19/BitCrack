@@ -1,6 +1,6 @@
 #include <algorithm>
 #include "ConfigFile.h"
-#include "util.h"
+#include "../util/util.h"
 
 
 ConfigFileReader::ConfigFileReader(const std::string &path)

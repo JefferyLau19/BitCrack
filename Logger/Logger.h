@@ -2,6 +2,7 @@
 #define _LOGGER_H
 
 #include <string>
+#include <fstream>
 
 
 namespace LogLevel {
@@ -22,10 +23,12 @@ class Logger {
 
 private:
 	static std::string _logFile;
+	static std::ofstream _logFileStream;
 
 	static std::string formatLog(int logLevel, std::string msg);
 
 	static std::string getDateTimeString();
+	static void logToFile(int logLevel, std::string msg);
 
 public:
 

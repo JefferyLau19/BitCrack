@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <time.h>
+#include <fstream>
+#include <iostream>
 
 #include "Logger.h"
 #include "util.h"
@@ -31,6 +33,9 @@ std::string LogLevel::toString(int level)
 
 	return "";
 }
+
+std::string Logger::_logFile = "";
+std::ofstream Logger::_logFileStream;
 
 std::string Logger::getDateTimeString()
 {
@@ -77,9 +82,31 @@ void Logger::log(int logLevel, std::string msg)
 	std::string str = formatLog(logLevel, msg);
 
 	fprintf(stderr, "%s\n", str.c_str());
+	
+	// Also write to log file if set
+	logToFile(logLevel, msg);
 }
 
 void Logger::setLogFile(std::string path)
 {
+    if(_logFileStream.is_open()) {
+        _logFileStream.close();
+    }
+    
+    _logFile = path;
+    if(!_logFile.empty()) {
+        _logFileStream.open(_logFile.c_str(), std::ios::app);
+        if(!_logFileStream.is_open()) {
+            std::cerr << "Failed to open log file: " << _logFile << std::endl;
+        }
+    }
+}
 
+void Logger::logToFile(int logLevel, std::string msg)
+{
+    if(!_logFile.empty() && _logFileStream.is_open()) {
+        std::string str = formatLog(logLevel, msg);
+        _logFileStream << str << std::endl;
+        _logFileStream.flush();
+    }
 }

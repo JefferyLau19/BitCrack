@@ -6,6 +6,8 @@
 #include<string.h>
 #include<string>
 #include<vector>
+#include <stdexcept>
+#define _CRT_SECURE_NO_WARNINGS
 
 namespace secp256k1 {
 
@@ -256,12 +258,12 @@ namespace secp256k1 {
 			return (this->v[n / 32] & (0x1 << (n % 32))) != 0;
 		}
 
-		bool isEven()
+		bool isEven() const
 		{
 			return (this->v[0] & 1) == 0;
 		}
 
-		std::string toString(int base = 16);
+		std::string toString(int base = 16) const;
 
         uint64_t toUint64()
         {
@@ -315,7 +317,7 @@ namespace secp256k1 {
 			return this->x == p.x && this->y == p.y;
 		}
 
-		std::string toString(bool compressed = false)
+		std::string toString(bool compressed = false) const
 		{
 			if(!compressed) {
 				return "04" + this->x.toString() + this->y.toString();

@@ -35,19 +35,33 @@ static cudaError_t setListPtr(void *ptr, unsigned int *numResults)
 
 cudaError_t CudaAtomicList::init(unsigned int itemSize, unsigned int maxItems)
 {
+	// 检查输入参数
+	if(itemSize <= 0 || maxItems <= 0) {
+		return cudaErrorInvalidValue;
+	}
+	
+	// 检查是否已经初始化
+	if(_countHostPtr != NULL || _hostPtr != NULL) {
+		return cudaErrorInitializationError;
+	}
+	
 	_itemSize = itemSize;
 
 	// The number of results found in the most recent kernel run
 	_countHostPtr = NULL;
 	cudaError_t err = cudaHostAlloc(&_countHostPtr, sizeof(unsigned int), cudaHostAllocMapped);
-	if(err) {
+	if(err != cudaSuccess) {
+		_countHostPtr = NULL;
 		goto end;
 	}
 
 	// Number of items in the list
 	_countDevPtr = NULL;
 	err = cudaHostGetDevicePointer(&_countDevPtr, _countHostPtr, 0);
-	if(err) {
+	if(err != cudaSuccess) {
+		cudaFreeHost(_countHostPtr);
+		_countHostPtr = NULL;
+		_countDevPtr = NULL;
 		goto end;
 	}
 	*_countHostPtr = 0;
@@ -55,7 +69,11 @@ cudaError_t CudaAtomicList::init(unsigned int itemSize, unsigned int maxItems)
 	// Storage for results data
 	_hostPtr = NULL;
 	err = cudaHostAlloc(&_hostPtr, itemSize * maxItems, cudaHostAllocMapped);
-	if(err) {
+	if(err != cudaSuccess) {
+		cudaFreeHost(_countHostPtr);
+		_countHostPtr = NULL;
+		_countDevPtr = NULL;
+		_hostPtr = NULL;
 		goto end;
 	}
 
@@ -63,21 +81,30 @@ cudaError_t CudaAtomicList::init(unsigned int itemSize, unsigned int maxItems)
 	_devPtr = NULL;
 	err = cudaHostGetDevicePointer(&_devPtr, _hostPtr, 0);
 
-	if(err) {
+	if(err != cudaSuccess) {
+		cudaFreeHost(_countHostPtr);
+		cudaFreeHost(_hostPtr);
+		_countHostPtr = NULL;
+		_countDevPtr = NULL;
+		_hostPtr = NULL;
+		_devPtr = NULL;
 		goto end;
 	}
 
 	err = setListPtr(_devPtr, _countDevPtr);
 
 end:
-	if(err) {
-		cudaFreeHost(_countHostPtr);
-
-		cudaFree(_countDevPtr);
-
-		cudaFreeHost(_hostPtr);
-
-		cudaFree(_devPtr);
+	if(err != cudaSuccess) {
+		if(_countHostPtr) cudaFreeHost(_countHostPtr);
+		if(_countDevPtr) cudaFree(_countDevPtr);
+		if(_hostPtr) cudaFreeHost(_hostPtr);
+		if(_devPtr) cudaFree(_devPtr);
+		
+		// 确保所有指针都设为NULL
+		_countHostPtr = NULL;
+		_countDevPtr = NULL;
+		_hostPtr = NULL;
+		_devPtr = NULL;
 	}
 
 	return err;

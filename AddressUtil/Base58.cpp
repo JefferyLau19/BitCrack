@@ -71,6 +71,7 @@ std::string Base58::toBase58(const secp256k1::uint256 &x)
 
 	secp256k1::uint256 value = x;
 
+	// First, convert the value to base58 without considering leading zeros
 	while(!value.isZero()) {
 		secp256k1::uint256 digit = value.mod(58);
 		int digitInt = digit.toInt32();
@@ -78,6 +79,29 @@ std::string Base58::toBase58(const secp256k1::uint256 &x)
 		s = BASE58_STRING[digitInt] + s;
 
 		value = value.div(58);
+	}
+
+	// Export the value to words to check for leading zeros
+	unsigned int words[8];
+	x.exportWords(words, 8, secp256k1::uint256::BigEndian);
+
+	// For Bitcoin addresses, the structure is:
+	// addressWords[0] = 0 (version byte 0x00)
+	// addressWords[1] = 0 (padding)
+	// addressWords[2-6] = hash160 digest
+	// addressWords[7] = checksum
+	// We need to add '1' prefix for each leading zero byte
+	
+	// Check for leading zero bytes and add corresponding '1' prefixes
+	// The first byte (version byte) is always 0x00 for Bitcoin addresses
+	if(words[0] == 0) {
+		s = "1" + s;
+		
+		// Check if the hash160 first byte (word[2]'s first byte) is also zero
+		// This would create a second leading zero byte
+		if((words[2] >> 24) == 0) {
+			s = "1" + s;
+		}
 	}
 
 	return s;

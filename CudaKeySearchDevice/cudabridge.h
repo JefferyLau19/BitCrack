@@ -4,8 +4,8 @@
 #include<cuda.h>
 #include<cuda_runtime.h>
 #include<string>
-#include "cudaUtil.h"
-#include "secp256k1.h"
+#include "../cudaUtil/cudaUtil.h"
+#include "../secp256k1lib/secp256k1.h"
 
 
 void callKeyFinderKernel(int blocks, int threads, int points, bool useDouble, int compression);

@@ -5,7 +5,7 @@
 #include <cuda_runtime.h>
 
 #include <vector>
-#include "secp256k1.h"
+#include "../secp256k1lib/secp256k1.h"
 
 
 class CudaDeviceKeys {
@@ -67,6 +67,9 @@ public:
 	}
 
 	cudaError_t init(int blocks, int threads, int pointsPerThread, const std::vector<secp256k1::uint256> &privateKeys);
+    
+    // 直接使用设备内存中的私钥初始化
+    cudaError_t initWithDeviceKeys(int blocks, int threads, int pointsPerThread, unsigned int *devPrivateKeys, unsigned int numKeys);
 
 	bool selfTest(const std::vector<secp256k1::uint256> &privateKeys);
 

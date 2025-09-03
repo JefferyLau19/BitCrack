@@ -10,6 +10,9 @@
 #include "CudaAtomicList.h"
 #include "cudaUtil.h"
 
+// GPU随机数生成器状态结构体前向声明
+struct GpuRngState;
+
 // Structures that exist on both host and device side
 struct CudaDeviceResult {
     int thread;
@@ -39,20 +42,23 @@ private:
 
     std::string _deviceName;
 
-    secp256k1::uint256 _startExponent;
-
     uint64_t _iterations;
 
     void cudaCall(cudaError_t err);
 
     void generateStartingPoints();
 
+    void outputTestAddresses(const std::vector<secp256k1::uint256> &exponents);
+
     CudaDeviceKeys _deviceKeys;
 
     CudaAtomicList _resultList;
 
     CudaHashLookup _targetLookup;
-
+    
+    // GPU随机数生成器状态
+    GpuRngState *_devRngStates;
+    
     void getResultsInternal();
 
     std::vector<hash160> _targets;
@@ -63,15 +69,23 @@ private:
 
     uint32_t getPrivateKeyOffset(int thread, int block, int point);
 
-    secp256k1::uint256 _stride;
+    bool _randomMode;
+    
+    // Random range mode variables
+    bool _randomRangeMode;
+    secp256k1::uint256 _randomRangeStart;
+    secp256k1::uint256 _randomRangeEnd;
 
     bool verifyKey(const secp256k1::uint256 &privateKey, const secp256k1::ecpoint &publicKey, const unsigned int hash[5], bool compressed);
 
 public:
 
     CudaKeySearchDevice(int device, int threads, int pointsPerThread, int blocks = 0);
+    
+    // 析构函数
+    virtual ~CudaKeySearchDevice();
 
-    virtual void init(const secp256k1::uint256 &start, int compression, const secp256k1::uint256 &stride);
+    virtual void init(int compression);
 
     virtual void doStep();
 
@@ -86,6 +100,36 @@ public:
     virtual void getMemoryInfo(uint64_t &freeMem, uint64_t &totalMem);
 
     virtual secp256k1::uint256 getNextKey();
-};
 
+    virtual void setRandomMode(bool randomMode);
+    
+    // Set random range for random range mode
+    virtual void setRandomRange(const secp256k1::uint256 &start, const secp256k1::uint256 &end);
+    
+    // Get the first randomly generated private key (for random mode example)
+    secp256k1::uint256 getFirstRandomKey() const { return _firstRandomKey; }
+    
+    // Check if device supports random generation
+    virtual bool supportsRandomGeneration();
+    
+    // Generate a random number
+    virtual secp256k1::uint256 generateRandomNumber(const secp256k1::uint256 &maxValue);
+    
+    // 使用GPU生成随机私钥
+    void generateRandomPrivateKeysGPU(std::vector<secp256k1::uint256> &exponents);
+    
+private:
+    secp256k1::uint256 _firstRandomKey;};
+
+// 设备函数声明
+__global__ void markFoundKeys(unsigned int *foundKeyIndices, int count);
+__device__ bool isKeyFound(int keyIndex);
+
+// GPU随机数生成器状态管理函数声明
+__host__ cudaError_t initializeGpuRngStates(GpuRngState **states, unsigned int count);
+__host__ void freeGpuRngStates(GpuRngState *states);
+
+// 随机私钥生成内核函数声明
+__global__ void generateRandomPrivateKeysKernel(unsigned int *privateKeys, GpuRngState *rngStates, unsigned int totalPoints);
+__global__ void generateRandomPrivateKeysRangeKernel(unsigned int *privateKeys, GpuRngState *rngStates, unsigned int totalPoints, const unsigned int *rangeStart, const unsigned int *rangeEnd);
 #endif
